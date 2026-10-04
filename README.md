@@ -16,7 +16,7 @@
 3. When it completes, open the Pages link:
    `https://keshab1997.github.io/godot-3d-obstacle-course/`
 
-The first deployment needs GitHub Pages enabled with **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+GitHub Pages is enabled for this repository with **GitHub Actions** as the deployment source. If you fork this project, set **Settings → Pages → Build and deployment → Source: GitHub Actions** before the first deployment.
 
 ## Android builds
 
