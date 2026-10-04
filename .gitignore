@@ -1,0 +1,15 @@
+# Godot editor and imported cache
+.godot/
+
+# Exported builds and Android Gradle template
+build/
+android/
+*.apk
+*.aab
+*.pck
+*.wasm
+
+# Signing material (never commit keystores)
+*.jks
+*.keystore
+*.pem

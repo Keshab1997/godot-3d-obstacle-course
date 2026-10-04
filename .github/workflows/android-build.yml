@@ -1,0 +1,158 @@
+name: Android APK and AAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_aab:
+        description: Build a signed Play Store AAB (requires Android signing secrets)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Cache Godot export templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/4.7.2.stable
+          key: godot-4.7.2-export-templates
+
+      - name: Install Godot 4.7.2 and export templates
+        run: bash scripts/install_godot.sh
+
+      - name: Configure Godot Android SDK paths
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/godot" .godot build/android
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+          keytool -genkeypair -v \
+            -keystore .godot/debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
+
+      - name: Import project and install Android build template
+        run: |
+          godot --headless --editor --path . --import --quit
+          godot --headless --editor --path . --install-android-build-template --quit
+
+      - name: Set Android version code
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("export_presets.cfg")
+          text = path.read_text()
+          run_number = os.environ["GITHUB_RUN_NUMBER"]
+          updated, count = re.subn(r"(?m)^version/code=\d+$", f"version/code={run_number}", text)
+          if count != 2:
+              raise SystemExit(f"Expected 2 Android version-code entries, found {count}")
+          path.write_text(updated)
+          PY
+
+      - name: Export debug APK
+        run: |
+          godot --headless --path . --export-debug "Android APK" build/android/neon-trail-debug.apk
+          test -s build/android/neon-trail-debug.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-trail-android-apk
+          path: build/android/neon-trail-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Validate AAB signing secrets
+        if: ${{ inputs.include_aab }}
+        id: signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" ]]; then
+            echo "::error::AAB requested, but ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, and ANDROID_KEY_ALIAS are not all configured."
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Restore release keystore and configure AAB preset
+        if: ${{ inputs.include_aab }}
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          mkdir -p .godot
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > .godot/release.keystore
+          chmod 600 .godot/release.keystore
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("export_presets.cfg")
+          text = path.read_text()
+          marker = "[preset.2.options]"
+          before, section = text.split(marker, 1)
+          values = {
+              "keystore/release": ".godot/release.keystore",
+              "keystore/release_user": os.environ["ANDROID_KEY_ALIAS"],
+              "keystore/release_password": os.environ["ANDROID_KEYSTORE_PASSWORD"],
+          }
+          for key, value in values.items():
+              pattern = rf"(?m)^{re.escape(key)}=.*$"
+              section, count = re.subn(pattern, f"{key}={json.dumps(value)}", section, count=1)
+              if count != 1:
+                  raise SystemExit(f"Could not update {key} in Android AAB preset")
+          path.write_text(before + marker + section)
+          PY
+
+      - name: Export signed AAB
+        if: ${{ inputs.include_aab }}
+        run: |
+          godot --headless --path . --export-release "Android AAB" build/android/neon-trail-release.aab
+          test -s build/android/neon-trail-release.aab
+
+      - name: Upload signed AAB
+        if: ${{ inputs.include_aab }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-trail-android-aab
+          path: build/android/neon-trail-release.aab
+          if-no-files-found: error
+          retention-days: 14
